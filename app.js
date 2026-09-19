@@ -47,7 +47,9 @@ function gameCard(event, showDate) {
 
   let metaRight = "";
   if (state === "pre") {
-    metaRight = new Date(event.date).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+    metaRight = comp.timeValid === false
+      ? new Date(event.date).toLocaleDateString([], { weekday: "short" }) + " · TBD"
+      : new Date(event.date).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
   } else if (state === "in") {
     metaRight = `<span class="live-dot">● LIVE</span> ${status.type.shortDetail}`;
   } else {
@@ -147,7 +149,8 @@ async function refreshAll() {
       loadScores(),
       loadRankings(),
       refreshBracketIfVisible(),
-      refreshPreviousIfVisible()
+      refreshPreviousIfVisible(),
+      refreshCalendarIfVisible()
     ]);
     setLastUpdated();
     schedulePoll(hasLive);
@@ -190,32 +193,59 @@ function captureCalendar(data) {
     const seasontype = Number(section.value);
     if (seasontype !== 2 && seasontype !== 3) continue;
     for (const entry of section.entries || []) {
-      if (new Date(entry.startDate) > now) continue;
-      weeks.push({ label: entry.label, value: Number(entry.value), seasontype });
+      weeks.push({
+        label: entry.label,
+        value: Number(entry.value),
+        seasontype,
+        started: new Date(entry.startDate) <= now
+      });
     }
   }
   if (!weeks.length) return;
 
   seasonMeta = {
     year: data.season ? data.season.year : currentSeasonYear(),
-    currentWeek: data.week ? data.week.number : weeks[weeks.length - 1].value,
+    currentWeek: data.week ? data.week.number : weeks[0].value,
     currentType: data.season ? data.season.type : 2,
     weeks
   };
+  seasonMeta.currentKey = `${seasonMeta.currentType}:${seasonMeta.currentWeek}`;
+
   initWeekSelect();
+  initCalendarSelect();
+  loadCalendar().catch(console.error);
+}
+
+function fillWeekSelect(select, weeks) {
+  select.innerHTML = "";
+  for (const w of weeks) {
+    const opt = document.createElement("option");
+    opt.value = `${w.seasontype}:${w.value}`;
+    opt.textContent = w.seasontype === 3 ? `Postseason — ${w.label}` : w.label;
+    select.appendChild(opt);
+  }
+  if ([...select.options].some(o => o.value === seasonMeta.currentKey)) {
+    select.value = seasonMeta.currentKey;
+  }
+}
+
+async function fetchWeekEvents(key, force) {
+  const cached = weekCache.get(key);
+  if (cached && !force) return cached;
+
+  const [seasontype, week] = key.split(":").map(Number);
+  const url = `https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard?groups=80&seasontype=${seasontype}&week=${week}&dates=${seasonMeta.year}&limit=400`;
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) throw new Error("week fetch failed: " + res.status);
+  const data = await res.json();
+  const events = data.events || [];
+  weekCache.set(key, events);
+  return events;
 }
 
 function initWeekSelect() {
   const select = document.getElementById("weekSelect");
-  select.innerHTML = "";
-  for (const w of seasonMeta.weeks.slice().reverse()) {
-    const opt = document.createElement("option");
-    opt.value = `${w.seasontype}:${w.value}`;
-    opt.textContent = w.label;
-    select.appendChild(opt);
-  }
-  const current = `${seasonMeta.currentType}:${seasonMeta.currentWeek}`;
-  if ([...select.options].some(o => o.value === current)) select.value = current;
+  fillWeekSelect(select, seasonMeta.weeks.filter(w => w.started).reverse());
   select.addEventListener("change", () => loadPreviousGames().catch(console.error));
 }
 
@@ -225,32 +255,124 @@ async function loadPreviousGames(force) {
   const key = select.value;
   if (!key) return;
 
-  const [seasontype, week] = key.split(":").map(Number);
-  const isCurrentWeek = seasontype === seasonMeta.currentType && week === seasonMeta.currentWeek;
-  const cached = weekCache.get(key);
-  if (cached && !force && !isCurrentWeek) {
-    renderPrevious(cached);
-    return;
-  }
-
-  const url = `https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard?groups=80&seasontype=${seasontype}&week=${week}&dates=${seasonMeta.year}&limit=300`;
-  const res = await fetch(url, { cache: "no-store" });
-  if (!res.ok) throw new Error("week fetch failed: " + res.status);
-  const data = await res.json();
+  const events = await fetchWeekEvents(key, force || key === seasonMeta.currentKey);
 
   // A different week may have been picked while this request was in flight.
   if (select.value !== key) return;
 
-  const finished = (data.events || [])
+  const finished = events
     .filter(ev => ev.competitions[0].status.type.completed)
     .sort((a, b) => new Date(b.date) - new Date(a.date));
 
-  weekCache.set(key, finished);
-  renderPrevious(finished);
+  renderGrid("previousGames", finished, "No completed games for this week yet.", true);
 }
 
-function renderPrevious(events) {
-  renderGrid("previousGames", events, "No completed games for this week yet.", true);
+/* ---------- Calendar ---------- */
+
+function initCalendarSelect() {
+  const select = document.getElementById("calendarSelect");
+  fillWeekSelect(select, seasonMeta.weeks);
+  select.addEventListener("change", () => loadCalendar().catch(console.error));
+}
+
+function calendarLabel(ev) {
+  const h = headlineOf(ev);
+  if (/National Championship/i.test(h)) return "CFP National Championship";
+  if (/Semifinal/i.test(h)) return `CFP Semifinal &middot; ${bowlName(ev)}`;
+  if (/Quarterfinal/i.test(h)) return `CFP Quarterfinal &middot; ${bowlName(ev)}`;
+  if (/First Round/i.test(h)) return "CFP First Round";
+  if (h) return h;
+  const groups = ev.competitions[0].groups;
+  return groups ? groups.shortName : "";
+}
+
+function calendarTeam(competitor, opponent, showScore, decided) {
+  const team = competitor.team;
+  const rank = competitor.curatedRank && competitor.curatedRank.current;
+  const won = decided && Number(competitor.score) > Number(opponent.score);
+  return `
+    <div class="cal-team${won ? " winner" : ""}">
+      <span class="cal-rank">${rank && rank <= 25 ? "#" + rank : ""}</span>
+      <img src="${esc(team.logo || "")}" alt="" onerror="this.style.visibility='hidden'">
+      <span class="cal-name">${esc(team.shortDisplayName || team.displayName)}</span>
+      <span class="cal-score">${showScore ? esc(competitor.score ?? "") : ""}</span>
+    </div>`;
+}
+
+function calendarRow(ev) {
+  const comp = ev.competitions[0];
+  const status = comp.status;
+  const state = status.type.state;
+  const home = comp.competitors.find(c => c.homeAway === "home");
+  const away = comp.competitors.find(c => c.homeAway === "away");
+  const started = state !== "pre";
+
+  let when;
+  if (state === "in") when = `<span class="live-dot">●</span> ${esc(status.type.shortDetail)}`;
+  else if (state === "post") when = "Final";
+  // ESPN parks kickoff at midnight until the time is announced.
+  else if (comp.timeValid === false) when = "Time TBD";
+  else when = new Date(ev.date).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+  const label = calendarLabel(ev);
+  const broadcast = comp.broadcast ? `<span class="cal-tv">${esc(comp.broadcast)}</span>` : "";
+
+  return `
+    <li class="cal-row${started ? " clickable" : ""}"${started ? ` data-event-id="${esc(ev.id)}" tabindex="0" role="button"` : ""}>
+      <div class="cal-when${state === "in" ? " live" : ""}">${when}</div>
+      <div class="cal-matchup">
+        ${calendarTeam(away, home, started, state === "post")}
+        ${calendarTeam(home, away, started, state === "post")}
+      </div>
+      <div class="cal-info">
+        <span class="cal-label">${label}</span>
+        ${broadcast}
+      </div>
+    </li>`;
+}
+
+function renderCalendar(events) {
+  const view = document.getElementById("calendarView");
+  if (!events.length) {
+    view.innerHTML = `<p class="modal-empty">No games scheduled for this week.</p>`;
+    return;
+  }
+
+  const byDay = new Map();
+  for (const ev of events.slice().sort((a, b) => new Date(a.date) - new Date(b.date))) {
+    const day = new Date(ev.date).toDateString();
+    if (!byDay.has(day)) byDay.set(day, []);
+    byDay.get(day).push(ev);
+  }
+
+  const today = new Date().toDateString();
+  view.innerHTML = [...byDay.entries()].map(([day, dayEvents]) => {
+    const label = new Date(day).toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
+    return `
+      <section class="cal-day">
+        <h3 class="cal-date${day === today ? " is-today" : ""}">
+          <span>${label}${day === today ? " &middot; Today" : ""}</span>
+          <span class="cal-count">${dayEvents.length} game${dayEvents.length === 1 ? "" : "s"}</span>
+        </h3>
+        <ul class="cal-list">${dayEvents.map(calendarRow).join("")}</ul>
+      </section>`;
+  }).join("");
+}
+
+async function loadCalendar(force) {
+  if (!seasonMeta) return;
+  const select = document.getElementById("calendarSelect");
+  const key = select.value;
+  if (!key) return;
+
+  const events = await fetchWeekEvents(key, force || key === seasonMeta.currentKey);
+  if (select.value !== key) return;
+  renderCalendar(events);
+}
+
+function refreshCalendarIfVisible() {
+  if (activeTabName() !== "calendar") return Promise.resolve();
+  return loadCalendar(true).catch(err => console.error(err));
 }
 
 function refreshPreviousIfVisible() {
@@ -405,12 +527,12 @@ function initModal() {
   });
 
   document.addEventListener("click", e => {
-    const card = e.target.closest(".game-card.clickable");
+    const card = e.target.closest("[data-event-id]");
     if (card) showGameDetails(card.dataset.eventId);
   });
   document.addEventListener("keydown", e => {
     if (e.key !== "Enter" && e.key !== " ") return;
-    const card = e.target.closest && e.target.closest(".game-card.clickable");
+    const card = e.target.closest && e.target.closest("[data-event-id]");
     if (card) {
       e.preventDefault();
       showGameDetails(card.dataset.eventId);
@@ -719,6 +841,7 @@ function initTabs() {
       document.getElementById(btn.dataset.tab).classList.add("active");
       if (btn.dataset.tab === "bracket") refreshBracketIfVisible();
       if (btn.dataset.tab === "previous") loadPreviousGames().catch(console.error);
+      if (btn.dataset.tab === "calendar") loadCalendar().catch(console.error);
     });
   });
 }

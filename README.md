@@ -5,13 +5,14 @@ A live-updating scoreboard + AP Top 25 rankings table, styled like an ESPN/March
 ## Tabs
 
 - **Scores** — every FBS game this week, split into Live / Upcoming / Final.
+- **Calendar** — the full season schedule, week by week, grouped by day. Covers every regular-season week plus the entire postseason (all bowls and all 11 playoff games), with kickoff times in your local timezone, TV networks, and bowl names. Today's date is highlighted; games whose kickoff time hasn't been announced show "Time TBD" rather than a bogus midnight.
 - **Previous Games** — completed games by week, newest first, with a week picker covering the whole season so far.
 - **Playoff Bracket** — the 12-team College Football Playoff, drawn from real game results. Slots start as TBD and fill in as the field is set and games are played, so you can trace exactly who beat whom on the way to the title. A season picker shows past brackets (2024-25 onward).
 - **AP Top 25** — current poll with records, points, and week-over-week movement.
 
 ## Highlights
 
-Click or tap any game that has started — in **Previous Games** or in the Final/Live sections of **Scores** — to open its detail popup:
+Click or tap any game that has started — in **Calendar**, **Previous Games**, or the Final/Live sections of **Scores** — to open its detail popup:
 
 - Every video highlight ESPN posted for that game, playing inline in the popup (clips without a direct video source open on ESPN instead).
 - A full scoring summary: each scoring play with quarter, clock, team, and the running score.

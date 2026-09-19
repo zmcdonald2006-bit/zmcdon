@@ -17,6 +17,7 @@
 
 <nav class="tabs">
   <button class="tab-btn active" data-tab="scores">Scores</button>
+  <button class="tab-btn" data-tab="calendar">Calendar</button>
   <button class="tab-btn" data-tab="previous">Previous Games</button>
   <button class="tab-btn" data-tab="bracket">Playoff Bracket</button>
   <button class="tab-btn" data-tab="rankings">AP Top 25</button>
@@ -36,6 +37,15 @@
       <h2>Final</h2>
       <div id="finalGames" class="game-grid empty">Loading…</div>
     </div>
+  </section>
+
+  <section id="calendar" class="tab-panel">
+    <div class="panel-toolbar">
+      <label for="calendarSelect">Week</label>
+      <select id="calendarSelect"></select>
+      <span id="calendarNote">Full schedule, kickoff times in your local time</span>
+    </div>
+    <div id="calendarView">Loading…</div>
   </section>
 
   <section id="previous" class="tab-panel">
