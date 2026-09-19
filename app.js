@@ -3,12 +3,158 @@ const RANKINGS_URL = "https://site.api.espn.com/apis/site/v2/sports/football/col
 
 const LIVE_POLL_MS = 30 * 1000;
 const IDLE_POLL_MS = 5 * 60 * 1000;
+const MAX_BACKOFF_MS = 5 * 60 * 1000;
 
 let pollTimer = null;
+let failureStreak = 0;
+let lastGoodUpdate = "";
 
-function setLastUpdated() {
+function setStatus(text, isError) {
   const el = document.getElementById("lastUpdated");
-  el.textContent = "Updated " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  el.textContent = text;
+  el.classList.toggle("status-error", !!isError);
+}
+
+function announce(message) {
+  const el = document.getElementById("liveRegion");
+  if (el) el.textContent = message;
+}
+
+/* ---------- Favorites ---------- */
+
+const FAV_KEY = "cfb-favorites";
+let favorites = new Set();
+
+function loadFavorites() {
+  try {
+    const raw = localStorage.getItem(FAV_KEY);
+    favorites = new Set(raw ? JSON.parse(raw) : []);
+  } catch (e) {
+    favorites = new Set();
+  }
+}
+
+function isFavorite(id) {
+  return favorites.has(String(id));
+}
+
+function toggleFavorite(id) {
+  const key = String(id);
+  if (favorites.has(key)) favorites.delete(key);
+  else favorites.add(key);
+  try { localStorage.setItem(FAV_KEY, JSON.stringify([...favorites])); } catch (e) { /* private mode */ }
+  return favorites.has(key);
+}
+
+function hasFavorite(ev) {
+  return ev.competitions[0].competitors.some(c => c.team && isFavorite(c.team.id));
+}
+
+/* ---------- Game filtering ---------- */
+
+const filterState = {
+  scores: { text: "", mode: "all", conf: "" },
+  previous: { text: "", mode: "all", conf: "" }
+};
+
+// ESPN only sets competition.groups on conference matchups, so conference comes
+// from the teams themselves — "Big Ten" means any game a Big Ten team is in.
+function conferenceOf(competitor) {
+  return (competitor.team && teamConferences.get(String(competitor.team.id))) || "";
+}
+
+function matchesFilter(ev, state) {
+  const comp = ev.competitions[0];
+  const competitors = comp.competitors || [];
+
+  if (state.conf && !competitors.some(c => conferenceOf(c) === state.conf)) return false;
+
+  if (state.mode === "ranked" &&
+    !competitors.some(c => c.curatedRank && c.curatedRank.current <= 25)) return false;
+
+  if (state.mode === "favorites" && !hasFavorite(ev)) return false;
+
+  if (state.text) {
+    const hay = competitors
+      .map(c => `${c.team.displayName || ""} ${c.team.shortDisplayName || ""} ${c.team.abbreviation || ""}`)
+      .join(" ")
+      .toLowerCase();
+    if (!hay.includes(state.text)) return false;
+  }
+  return true;
+}
+
+// Favourited games float to the top of whatever order they were already in.
+function favoritesFirst(events) {
+  return events.slice().sort((a, b) => (hasFavorite(b) ? 1 : 0) - (hasFavorite(a) ? 1 : 0));
+}
+
+function applyFilter(events, key) {
+  return favoritesFirst(events.filter(ev => matchesFilter(ev, filterState[key])));
+}
+
+function syncConferenceOptions(key, events) {
+  const bar = document.querySelector(`.filter-bar[data-filter-for="${key}"]`);
+  if (!bar) return;
+  const select = bar.querySelector(".filter-conf");
+  const names = [...new Set(events
+    .flatMap(ev => ev.competitions[0].competitors.map(c => conferenceOf(c)))
+    .filter(Boolean))].sort();
+
+  const signature = names.join("|");
+  if (select.dataset.sig === signature) return;
+  select.dataset.sig = signature;
+
+  const previous = select.value;
+  select.innerHTML = `<option value="">All conferences</option>` +
+    names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+
+  if (names.includes(previous)) select.value = previous;
+  else filterState[key].conf = "";
+}
+
+function setFilterCount(key, shown, total) {
+  const bar = document.querySelector(`.filter-bar[data-filter-for="${key}"]`);
+  if (!bar) return;
+  const el = bar.querySelector(".filter-count");
+  const filtering = shown !== total;
+  el.textContent = filtering ? `${shown} of ${total} games` : `${total} game${total === 1 ? "" : "s"}`;
+  el.classList.toggle("is-filtering", filtering);
+}
+
+function initFilterBars() {
+  document.querySelectorAll(".filter-bar").forEach(bar => {
+    const key = bar.dataset.filterFor;
+    const state = filterState[key];
+    if (!state) return;
+
+    bar.querySelector(".filter-search").addEventListener("input", e => {
+      state.text = e.target.value.trim().toLowerCase();
+      rerenderGames(key);
+    });
+
+    bar.querySelectorAll(".chip").forEach(chip => {
+      chip.addEventListener("click", () => {
+        state.mode = chip.dataset.mode;
+        bar.querySelectorAll(".chip").forEach(c => {
+          const on = c === chip;
+          c.classList.toggle("active", on);
+          c.setAttribute("aria-pressed", String(on));
+        });
+        rerenderGames(key);
+      });
+    });
+
+    bar.querySelector(".filter-conf").addEventListener("change", e => {
+      state.conf = e.target.value;
+      rerenderGames(key);
+    });
+  });
+}
+
+function rerenderGames(key) {
+  if (key === "scores") renderScores();
+  else renderPrevious();
 }
 
 function rankBadge(competitor) {
@@ -21,14 +167,16 @@ function teamRow(competitor, isWinner) {
   const team = competitor.team;
   const rank = rankBadge(competitor);
   const score = competitor.score ?? "";
+  const fav = isFavorite(team.id);
   return `
     <div class="team-row${isWinner ? " winner" : ""}">
       <div class="team-name">
         <span class="rank">${rank}</span>
-        <img class="logo" src="${team.logo || ""}" alt="" onerror="this.style.visibility='hidden'">
-        <span>${team.shortDisplayName || team.displayName}</span>
+        <img class="logo" src="${esc(team.logo || "")}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
+        <span>${esc(team.shortDisplayName || team.displayName)}</span>
+        ${fav ? `<span class="fav-mark" title="Favorite" aria-label="Favorite">★</span>` : ""}
       </div>
-      <div class="score">${score}</div>
+      <div class="score">${esc(score)}</div>
     </div>`;
 }
 
@@ -66,10 +214,14 @@ function gameCard(event, showDate) {
   // Only games that have started have highlights or a scoring summary worth opening.
   const openable = state !== "pre";
 
+  const label = openable
+    ? `${away.team.displayName} at ${home.team.displayName}, open highlights`
+    : "";
+
   return `
-    <div class="game-card${openable ? " clickable" : ""}" data-state="${state}"${openable ? ` data-event-id="${event.id}" tabindex="0" role="button"` : ""}>
+    <div class="game-card${openable ? " clickable" : ""}${hasFavorite(event) ? " is-fav" : ""}" data-state="${state}"${openable ? ` data-event-id="${esc(event.id)}" tabindex="0" role="button" aria-label="${esc(label)}"` : ""}>
       <div class="meta">
-        <span>${metaLeft}</span>
+        <span>${esc(metaLeft)}</span>
         <span>${metaRight}</span>
       </div>
       ${teamRow(away, awayWin)}
@@ -78,15 +230,54 @@ function gameCard(event, showDate) {
     </div>`;
 }
 
+// Re-rendering a grid of 100 cards every 30 seconds throws away hover and focus
+// state for nothing, so each grid only rebuilds when something it shows changed.
+const renderSignatures = new Map();
+
+function gameSignature(ev) {
+  const comp = ev.competitions[0];
+  return [
+    ev.id,
+    comp.status.type.state,
+    comp.status.displayClock,
+    comp.status.period,
+    comp.competitors.map(c => c.score).join("-"),
+    hasFavorite(ev) ? "f" : ""
+  ].join(":");
+}
+
 function renderGrid(elId, events, emptyMsg, showDate) {
   const el = document.getElementById(elId);
+  if (!el) return;
+
+  const signature = events.map(gameSignature).join("|") + (showDate ? "|d" : "");
+  if (renderSignatures.get(elId) === signature) return;
+  renderSignatures.set(elId, signature);
+
   if (!events.length) {
     el.className = "game-grid empty";
-    el.innerHTML = emptyMsg;
+    el.innerHTML = esc(emptyMsg);
     return;
   }
   el.className = "game-grid";
   el.innerHTML = events.map(ev => gameCard(ev, showDate)).join("");
+}
+
+let scoreBuckets = { live: [], upcoming: [], final: [] };
+
+function renderScores() {
+  const all = [...scoreBuckets.live, ...scoreBuckets.upcoming, ...scoreBuckets.final];
+  syncConferenceOptions("scores", all);
+
+  const live = applyFilter(scoreBuckets.live, "scores");
+  const upcoming = applyFilter(scoreBuckets.upcoming, "scores");
+  const final = applyFilter(scoreBuckets.final, "scores");
+
+  renderGrid("liveGames", live, "No games in progress.");
+  renderGrid("upcomingGames", upcoming, "No upcoming games match.");
+  renderGrid("finalGames", final, "No completed games match.");
+
+  setFilterCount("scores", live.length + upcoming.length + final.length, all.length);
 }
 
 async function loadScores() {
@@ -106,10 +297,13 @@ async function loadScores() {
   upcoming.sort((a, b) => new Date(a.date) - new Date(b.date));
   final.sort((a, b) => new Date(b.date) - new Date(a.date));
 
-  renderGrid("liveGames", live, "No games in progress.");
-  renderGrid("upcomingGames", upcoming, "No upcoming games this week.");
-  renderGrid("finalGames", final, "No completed games yet.");
+  const wasLive = scoreBuckets.live.length;
+  scoreBuckets = { live, upcoming, final };
+  renderScores();
 
+  if (live.length !== wasLive) {
+    announce(live.length ? `${live.length} games in progress` : "No games in progress");
+  }
   return live.length > 0;
 }
 
@@ -120,50 +314,110 @@ function trendClass(trend) {
   return "trend-flat";
 }
 
+const POLL_KEY = "cfb-poll";
+let availablePolls = [];
+
+// Which polls exist changes through the season — the committee rankings only
+// appear from late October — so the list is built from whatever the API returns.
+function syncPollOptions(polls) {
+  const select = document.getElementById("pollSelect");
+  const names = polls.map(p => p.name);
+  if (select.dataset.sig === names.join("|")) return;
+  select.dataset.sig = names.join("|");
+
+  let preferred = select.value;
+  if (!preferred) {
+    try { preferred = localStorage.getItem(POLL_KEY) || ""; } catch (e) { preferred = ""; }
+  }
+
+  select.innerHTML = polls.map(p => `<option value="${esc(p.name)}">${esc(p.shortName || p.name)}</option>`).join("");
+  if (names.includes(preferred)) select.value = preferred;
+  else if (names.includes("AP Top 25")) select.value = "AP Top 25";
+}
+
+function renderRankings() {
+  const body = document.getElementById("rankingsBody");
+  const note = document.getElementById("pollNote");
+  const wanted = document.getElementById("pollSelect").value;
+  const poll = availablePolls.find(p => p.name === wanted) || availablePolls[0];
+
+  if (!poll || !poll.ranks || !poll.ranks.length) {
+    body.innerHTML = `<tr><td colspan="6" class="empty-row">Rankings aren't available right now.</td></tr>`;
+    note.textContent = "";
+    return;
+  }
+
+  note.textContent = poll.occurrence && poll.occurrence.displayValue ? poll.occurrence.displayValue : "";
+
+  body.innerHTML = poll.ranks.map(r => {
+    const team = r.team || {};
+    const name = `${team.location || ""} ${team.name || team.nickname || ""}`.trim();
+    return `
+    <tr${isFavorite(team.id) ? ' class="is-fav"' : ""}>
+      <td>${esc(r.current)}</td>
+      <td><img class="logo" src="${esc(team.logo || "")}" alt="" loading="lazy" onerror="this.style.visibility='hidden'"></td>
+      <td>${esc(name)}</td>
+      <td>${esc(r.recordSummary || "")}</td>
+      <td>${esc(r.points ?? "")}</td>
+      <td class="${trendClass(r.trend)}">${esc(r.trend || "")}</td>
+    </tr>`;
+  }).join("");
+}
+
 async function loadRankings() {
   const res = await fetch(RANKINGS_URL, { cache: "no-store" });
   if (!res.ok) throw new Error("rankings fetch failed: " + res.status);
   const data = await res.json();
-  const poll = (data.rankings || []).find(p => p.name === "AP Top 25") || data.rankings[0];
-  const body = document.getElementById("rankingsBody");
 
-  if (!poll || !poll.ranks || !poll.ranks.length) {
-    body.innerHTML = `<tr><td colspan="6" class="empty-row">Rankings not available right now.</td></tr>`;
-    return;
-  }
-
-  body.innerHTML = poll.ranks.map(r => `
-    <tr>
-      <td>${r.current}</td>
-      <td><img class="logo" src="${r.team.logo || ""}" alt="" onerror="this.style.visibility='hidden'"></td>
-      <td>${r.team.location} ${r.team.name || r.team.nickname}</td>
-      <td>${r.recordSummary || ""}</td>
-      <td>${r.points ?? ""}</td>
-      <td class="${trendClass(r.trend)}">${r.trend || ""}</td>
-    </tr>`).join("");
+  availablePolls = (data.rankings || []).filter(p => p.ranks && p.ranks.length);
+  syncPollOptions(availablePolls);
+  renderRankings();
 }
 
+function initPollSelect() {
+  document.getElementById("pollSelect").addEventListener("change", e => {
+    try { localStorage.setItem(POLL_KEY, e.target.value); } catch (err) { /* private mode */ }
+    renderRankings();
+  });
+}
+
+// Each section settles independently: a rankings outage should never blank the
+// scoreboard, so only a total failure is surfaced as an error.
 async function refreshAll() {
-  try {
-    const [hasLive] = await Promise.all([
-      loadScores(),
-      loadRankings(),
-      refreshBracketIfVisible(),
-      refreshPreviousIfVisible(),
-      refreshCalendarIfVisible()
-    ]);
-    setLastUpdated();
-    schedulePoll(hasLive);
-  } catch (err) {
-    document.getElementById("lastUpdated").textContent = "Update failed — retrying…";
-    schedulePoll(false);
-    console.error(err);
+  const results = await Promise.allSettled([
+    loadScores(),
+    loadRankings(),
+    refreshBracketIfVisible(),
+    refreshPreviousIfVisible(),
+    refreshCalendarIfVisible()
+  ]);
+
+  results.filter(r => r.status === "rejected").forEach(r => console.error(r.reason));
+
+  // The scoreboard is the heart of the page, so its result decides whether we're
+  // healthy. The tab-specific refreshes resolve trivially when hidden and would
+  // otherwise mask an outage.
+  const scores = results[0];
+  const scoresFailed = scores.status === "rejected";
+
+  if (scoresFailed) {
+    failureStreak++;
+    setStatus(lastGoodUpdate ? `Offline — showing ${lastGoodUpdate}` : "Can't reach ESPN — retrying…", true);
+  } else {
+    failureStreak = 0;
+    lastGoodUpdate = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    setStatus("Updated " + lastGoodUpdate, false);
   }
+
+  schedulePoll(!scoresFailed && scores.value === true, scoresFailed);
 }
 
-function schedulePoll(hasLive) {
-  if (pollTimer) clearTimeout(pollTimer);
-  const interval = hasLive ? LIVE_POLL_MS : IDLE_POLL_MS;
+function schedulePoll(hasLive, backOff) {
+  clearTimeout(pollTimer);
+  if (document.hidden) return;
+
+  let interval = hasLive ? LIVE_POLL_MS : IDLE_POLL_MS;
+  if (backOff) interval = Math.min(LIVE_POLL_MS * 2 ** failureStreak, MAX_BACKOFF_MS);
   pollTimer = setTimeout(refreshAll, interval);
 }
 
@@ -211,6 +465,7 @@ function captureCalendar(data) {
   };
   seasonMeta.currentKey = `${seasonMeta.currentType}:${seasonMeta.currentWeek}`;
 
+  syncSeasonSelects();
   initWeekSelect();
   initCalendarSelect();
   loadCalendar().catch(console.error);
@@ -260,11 +515,20 @@ async function loadPreviousGames(force) {
   // A different week may have been picked while this request was in flight.
   if (select.value !== key) return;
 
-  const finished = events
+  previousEvents = events
     .filter(ev => ev.competitions[0].status.type.completed)
     .sort((a, b) => new Date(b.date) - new Date(a.date));
 
-  renderGrid("previousGames", finished, "No completed games for this week yet.", true);
+  renderPrevious();
+}
+
+let previousEvents = [];
+
+function renderPrevious() {
+  syncConferenceOptions("previous", previousEvents);
+  const shown = applyFilter(previousEvents, "previous");
+  renderGrid("previousGames", shown, "No completed games match.", true);
+  setFilterCount("previous", shown.length, previousEvents.length);
 }
 
 /* ---------- Calendar ---------- */
@@ -372,12 +636,24 @@ async function loadCalendar(force) {
 
 function refreshCalendarIfVisible() {
   if (activeTabName() !== "calendar") return Promise.resolve();
-  return loadCalendar(true).catch(err => console.error(err));
+  return loadCalendar(true).catch(err => {
+    document.getElementById("calendarView").innerHTML =
+      `<p class="modal-empty">Couldn't load this week. <button class="retry-btn" data-retry="calendar">Try again</button></p>`;
+    console.error(err);
+  });
 }
 
 function refreshPreviousIfVisible() {
   if (activeTabName() !== "previous") return Promise.resolve();
-  return loadPreviousGames(true).catch(err => console.error(err));
+  return loadPreviousGames(true).catch(err => {
+    const el = document.getElementById("previousGames");
+    el.className = "game-grid empty";
+    el.innerHTML = `Couldn't load this week. <button class="retry-btn" data-retry="previous">Try again</button>`;
+    // The cached signature no longer describes what's on screen, so drop it or a
+    // successful retry with identical data would skip re-rendering.
+    renderSignatures.delete("previousGames");
+    console.error(err);
+  });
 }
 
 /* ---------- Game highlights ---------- */
@@ -427,6 +703,7 @@ function summaryHtml(summary) {
     <div class="modal-team${c.winner ? " winner" : ""}">
       <img src="${esc(logoOf(c))}" alt="" onerror="this.style.visibility='hidden'">
       <span class="modal-team-name">${esc(c.team.displayName)}</span>
+      ${favButton(c.team.id, c.team.displayName)}
       <span class="modal-team-score">${esc(c.score)}</span>
     </div>`;
 
@@ -469,7 +746,10 @@ function summaryHtml(summary) {
     ${scoring}`;
 }
 
+let lastFocusedBeforeModal = null;
+
 function openModal() {
+  lastFocusedBeforeModal = document.activeElement;
   document.getElementById("gameModal").hidden = false;
   document.body.classList.add("modal-open");
   document.getElementById("modalClose").focus();
@@ -479,6 +759,38 @@ function closeModal() {
   document.getElementById("gameModal").hidden = true;
   document.body.classList.remove("modal-open");
   document.getElementById("modalBody").innerHTML = "";
+  if (lastFocusedBeforeModal && lastFocusedBeforeModal.isConnected) lastFocusedBeforeModal.focus();
+  lastFocusedBeforeModal = null;
+}
+
+const FOCUSABLE = 'button, [href], input, select, textarea, video, [tabindex]:not([tabindex="-1"])';
+
+function trapFocus(e) {
+  if (e.key !== "Tab") return;
+  const modal = document.querySelector("#gameModal .modal");
+  if (!modal) return;
+
+  // Scoping has to happen via the element: prefixing a comma-separated selector
+  // list would only scope its first entry.
+  const items = [...modal.querySelectorAll(FOCUSABLE)].filter(el => el.getClientRects().length);
+  if (!items.length) return;
+
+  const first = items[0];
+  const last = items[items.length - 1];
+  if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault();
+    first.focus();
+  }
+}
+
+function favButton(teamId, teamName) {
+  const on = isFavorite(teamId);
+  return `<button class="fav-btn${on ? " on" : ""}" data-fav="${esc(teamId)}" aria-pressed="${on}"
+    aria-label="${on ? "Remove" : "Add"} ${esc(teamName)} ${on ? "from" : "to"} favorites"
+    title="${on ? "Remove from" : "Add to"} favorites">★</button>`;
 }
 
 async function showGameDetails(eventId) {
@@ -507,8 +819,24 @@ function initModal() {
   document.getElementById("gameModal").addEventListener("click", e => {
     if (e.target.id === "gameModal") closeModal();
   });
+  document.getElementById("gameModal").addEventListener("keydown", trapFocus);
   document.addEventListener("keydown", e => {
     if (e.key === "Escape" && !document.getElementById("gameModal").hidden) closeModal();
+  });
+
+  // Favourite toggles live in the modal and the team page, never inside a
+  // clickable card, so this never competes with opening a game.
+  document.addEventListener("click", e => {
+    const btn = e.target.closest("[data-fav]");
+    if (!btn) return;
+    e.stopPropagation();
+    const on = toggleFavorite(btn.dataset.fav);
+    btn.classList.toggle("on", on);
+    btn.setAttribute("aria-pressed", String(on));
+    renderSignatures.clear();
+    renderScores();
+    renderPrevious();
+    renderRankings();
   });
 
   document.getElementById("modalBody").addEventListener("click", e => {
@@ -546,6 +874,7 @@ const TEAM_API = "https://site.api.espn.com/apis/site/v2/sports/football/college
 const OLDEST_SEASON = 2004;
 
 let teamIndex = null;
+let teamConferences = new Map();
 let currentTeamId = null;
 const teamDataCache = new Map();
 
@@ -565,6 +894,8 @@ async function loadTeamIndex() {
   const res = await fetch("teams.json");
   if (!res.ok) throw new Error("teams.json fetch failed: " + res.status);
   teamIndex = await res.json();
+
+  teamConferences = new Map(teamIndex.filter(t => t.conf).map(t => [t.id, t.conf]));
 
   document.getElementById("teamOptions").innerHTML =
     teamIndex.map(t => `<option value="${esc(t.name)}"></option>`).join("");
@@ -625,6 +956,7 @@ function renderTeamHeader(team) {
         ${bits ? `<div class="team-meta">${bits}</div>` : ""}
         ${nextLine}
       </div>
+      ${favButton(team.id, team.displayName)}
     </div>`;
 }
 
@@ -825,9 +1157,11 @@ async function selectTeam(teamId) {
     if (currentTeamId !== teamId) return;
     renderTeamHeader(data.team);
     document.getElementById("teamSearch").value = data.team.displayName;
+    if (activeTabName() === "teams") writeHash();
     loadActiveSubtab();
   } catch (err) {
-    document.getElementById("teamHeader").innerHTML = `<p class="modal-empty">Couldn't load that team.</p>`;
+    document.getElementById("teamHeader").innerHTML =
+      `<p class="modal-empty">Couldn't load that team. <button class="retry-btn" data-retry="team">Try again</button></p>`;
     console.error(err);
   }
 }
@@ -893,7 +1227,10 @@ const BRACKET_SLOTS = {
 const FIRST_12_TEAM_SEASON = 2024;
 const bracketCache = new Map();
 
+// The API is the source of truth for which season we're in; the clock is only a
+// stand-in for the moment before the first scoreboard response lands.
 function currentSeasonYear() {
+  if (seasonMeta && seasonMeta.year) return seasonMeta.year;
   const now = new Date();
   return now.getMonth() >= 7 ? now.getFullYear() : now.getFullYear() - 1;
 }
@@ -1118,9 +1455,23 @@ async function loadBracket(year, force) {
   if (Number(document.getElementById("seasonSelect").value) !== year) return;
 
   const note = document.getElementById("bracketNote");
+  const view = document.getElementById("bracketView");
+
   if (!events.length) {
-    document.getElementById("bracketView").innerHTML =
-      `<div class="bracket-error">No playoff games found for the ${year} season.</div>`;
+    view.innerHTML = `<div class="bracket-error">No playoff games scheduled yet for the ${year} season.</div>`;
+    note.textContent = "";
+    return;
+  }
+
+  // If the field ever grows past 12 teams this layout no longer describes it.
+  // Say so plainly instead of quietly drawing the wrong bracket.
+  const firstRound = events.filter(ev => roundOf(ev) === "fr").length;
+  if (firstRound > 4) {
+    view.innerHTML = `<div class="bracket-error">
+      This season's playoff opens with ${firstRound} first-round games, a bigger field than the
+      12-team bracket this view was built for. The bracket layout needs updating —
+      until then, the Calendar tab lists every playoff game.
+    </div>`;
     note.textContent = "";
     return;
   }
@@ -1138,20 +1489,38 @@ function activeTabName() {
   return btn ? btn.dataset.tab : "scores";
 }
 
-function initSeasonSelect() {
-  const select = document.getElementById("seasonSelect");
-  const current = currentSeasonYear();
-  for (let y = current; y >= FIRST_12_TEAM_SEASON; y--) {
+// Season pickers are built from the clock at startup, then rebuilt once the API
+// tells us the real season — so a new season needs no code change, and a season
+// rolling over mid-visit doesn't leave a stale list behind.
+function fillSeasonOptions(select, oldest) {
+  const newest = currentSeasonYear();
+  if (Number(select.dataset.newest) === newest) return;
+
+  const keep = select.value;
+  select.dataset.newest = String(newest);
+  select.innerHTML = "";
+  for (let y = newest; y >= oldest; y--) {
     const opt = document.createElement("option");
     opt.value = String(y);
     opt.textContent = `${y}-${String(y + 1).slice(2)}`;
     select.appendChild(opt);
   }
+  if (keep && [...select.options].some(o => o.value === keep)) select.value = keep;
+}
+
+function syncSeasonSelects() {
+  fillSeasonOptions(document.getElementById("seasonSelect"), FIRST_12_TEAM_SEASON);
+  fillSeasonOptions(document.getElementById("teamSeason"), OLDEST_SEASON);
+}
+
+function initSeasonSelect() {
+  const select = document.getElementById("seasonSelect");
+  fillSeasonOptions(select, FIRST_12_TEAM_SEASON);
   select.addEventListener("change", () => {
     const year = Number(select.value);
     loadBracket(year, year === currentSeasonYear()).catch(err => {
       document.getElementById("bracketView").innerHTML =
-        `<div class="bracket-error">Could not load the bracket. Try again in a moment.</div>`;
+        `<div class="bracket-error">Couldn't load the bracket. <button class="retry-btn" data-retry="bracket">Try again</button></div>`;
       console.error(err);
     });
   });
@@ -1163,28 +1532,109 @@ function refreshBracketIfVisible() {
   return loadBracket(year, year === currentSeasonYear()).catch(err => console.error(err));
 }
 
-function initTabs() {
+/* ---------- Tabs and routing ---------- */
+
+const TAB_IDS = ["scores", "calendar", "previous", "teams", "bracket", "rankings"];
+
+function activateTab(name, updateHash) {
+  if (!TAB_IDS.includes(name)) name = "scores";
+
   document.querySelectorAll(".tab-btn").forEach(btn => {
-    btn.addEventListener("click", () => {
-      document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
-      document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
-      btn.classList.add("active");
-      document.getElementById(btn.dataset.tab).classList.add("active");
-      if (btn.dataset.tab === "bracket") refreshBracketIfVisible();
-      if (btn.dataset.tab === "previous") loadPreviousGames().catch(console.error);
-      if (btn.dataset.tab === "calendar") loadCalendar().catch(console.error);
-      if (btn.dataset.tab === "teams") openTeamsTab();
-    });
+    const on = btn.dataset.tab === name;
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-selected", String(on));
+    btn.tabIndex = on ? 0 : -1;
   });
+  document.querySelectorAll(".tab-panel").forEach(panel => {
+    panel.classList.toggle("active", panel.id === name);
+  });
+
+  if (updateHash) writeHash();
+
+  if (name === "bracket") refreshBracketIfVisible();
+  if (name === "previous") loadPreviousGames().catch(console.error);
+  if (name === "calendar") loadCalendar().catch(console.error);
+  if (name === "teams") openTeamsTab();
 }
 
-document.getElementById("refreshBtn").addEventListener("click", refreshAll);
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) refreshAll();
+function writeHash() {
+  const tab = activeTabName();
+  const hash = tab === "teams" && currentTeamId ? `#teams/${currentTeamId}` : `#${tab}`;
+  if (location.hash !== hash) location.hash = hash;
+}
+
+// Applying the hash is idempotent, so the hashchange it triggers settles immediately.
+function applyHash() {
+  const [tab, param] = (location.hash || "").replace(/^#\/?/, "").split("/");
+  const target = TAB_IDS.includes(tab) ? tab : "scores";
+  if (target !== activeTabName()) activateTab(target, false);
+  if (target === "teams" && param && param !== currentTeamId) selectTeam(param);
+}
+
+function initTabs() {
+  const buttons = [...document.querySelectorAll(".tab-btn")];
+
+  buttons.forEach(btn => {
+    btn.addEventListener("click", () => activateTab(btn.dataset.tab, true));
+  });
+
+  document.querySelector(".tabs").addEventListener("keydown", e => {
+    const index = buttons.findIndex(b => b === document.activeElement);
+    if (index === -1) return;
+    let next = null;
+    if (e.key === "ArrowRight") next = (index + 1) % buttons.length;
+    else if (e.key === "ArrowLeft") next = (index - 1 + buttons.length) % buttons.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = buttons.length - 1;
+    if (next === null) return;
+    e.preventDefault();
+    activateTab(buttons[next].dataset.tab, true);
+    buttons[next].focus();
+  });
+
+  window.addEventListener("hashchange", applyHash);
+}
+
+document.getElementById("refreshBtn").addEventListener("click", () => {
+  setStatus("Refreshing…", false);
+  refreshAll();
 });
 
+// Polling stops entirely while the tab is in the background and catches up on return.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    clearTimeout(pollTimer);
+    pollTimer = null;
+  } else {
+    refreshAll();
+  }
+});
+
+// Error states render a retry button rather than stranding the user.
+document.addEventListener("click", e => {
+  const retry = e.target.closest(".retry-btn");
+  if (!retry) return;
+  const what = retry.dataset.retry;
+  if (what === "bracket") refreshBracketIfVisible();
+  else if (what === "calendar") loadCalendar(true).catch(console.error);
+  else if (what === "previous") loadPreviousGames(true).catch(console.error);
+  else if (what === "team") loadActiveSubtab();
+  else refreshAll();
+});
+
+loadFavorites();
 initTabs();
 initSeasonSelect();
+initPollSelect();
+initFilterBars();
 initTeams();
 initModal();
+applyHash();
+
+// The team index also powers the conference filter, so it loads up front rather
+// than waiting for the Teams tab.
+loadTeamIndex()
+  .then(() => { renderScores(); renderPrevious(); })
+  .catch(err => console.error(err));
+
 refreshAll();

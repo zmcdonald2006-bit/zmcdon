@@ -4,9 +4,17 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>College Football Live Tracker</title>
+<meta name="description" content="Live college football scores, the full season schedule, playoff bracket, team pages and game highlights — updating automatically.">
+<meta name="theme-color" content="#0f1115">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230f1115'/%3E%3Cellipse cx='16' cy='16' rx='11' ry='7' transform='rotate(-35 16 16)' fill='%23ff6a3d'/%3E%3Cpath d='M11 21 21 11M13.5 15.5l3 3M16.5 12.5l3 3' stroke='%230f1115' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://site.api.espn.com">
+<link rel="preconnect" href="https://a.espncdn.com">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<a class="skip-link" href="#main">Skip to content</a>
+
 <header class="topbar">
   <h1>College Football Live Tracker</h1>
   <div class="status-line">
@@ -15,50 +23,79 @@
   </div>
 </header>
 
-<nav class="tabs">
-  <button class="tab-btn active" data-tab="scores">Scores</button>
-  <button class="tab-btn" data-tab="calendar">Calendar</button>
-  <button class="tab-btn" data-tab="previous">Previous Games</button>
-  <button class="tab-btn" data-tab="teams">Teams</button>
-  <button class="tab-btn" data-tab="bracket">Playoff Bracket</button>
-  <button class="tab-btn" data-tab="rankings">AP Top 25</button>
+<nav class="tabs" role="tablist" aria-label="Sections">
+  <button class="tab-btn active" role="tab" id="tab-scores" aria-controls="scores" aria-selected="true" data-tab="scores">Scores</button>
+  <button class="tab-btn" role="tab" id="tab-calendar" aria-controls="calendar" aria-selected="false" tabindex="-1" data-tab="calendar">Calendar</button>
+  <button class="tab-btn" role="tab" id="tab-previous" aria-controls="previous" aria-selected="false" tabindex="-1" data-tab="previous">Previous Games</button>
+  <button class="tab-btn" role="tab" id="tab-teams" aria-controls="teams" aria-selected="false" tabindex="-1" data-tab="teams">Teams</button>
+  <button class="tab-btn" role="tab" id="tab-bracket" aria-controls="bracket" aria-selected="false" tabindex="-1" data-tab="bracket">Playoff Bracket</button>
+  <button class="tab-btn" role="tab" id="tab-rankings" aria-controls="rankings" aria-selected="false" tabindex="-1" data-tab="rankings">Rankings</button>
 </nav>
 
-<main>
-  <section id="scores" class="tab-panel active">
+<main id="main">
+  <section id="scores" class="tab-panel active" role="tabpanel" aria-labelledby="tab-scores" tabindex="0">
+    <div class="filter-bar" data-filter-for="scores">
+      <input type="search" class="filter-search" placeholder="Filter by team…" aria-label="Filter games by team" autocomplete="off">
+      <div class="chips" role="group" aria-label="Quick filters">
+        <button class="chip active" data-mode="all" aria-pressed="true">All</button>
+        <button class="chip" data-mode="ranked" aria-pressed="false">Ranked</button>
+        <button class="chip" data-mode="favorites" aria-pressed="false">Favorites</button>
+      </div>
+      <select class="filter-conf" aria-label="Filter by conference"><option value="">All conferences</option></select>
+      <span class="filter-count"></span>
+    </div>
+
     <div id="liveSection" class="game-section">
       <h2>Live Now</h2>
       <div id="liveGames" class="game-grid empty">No games in progress.</div>
     </div>
     <div id="upcomingSection" class="game-section">
       <h2>Upcoming</h2>
-      <div id="upcomingGames" class="game-grid empty">Loading…</div>
+      <div id="upcomingGames" class="game-grid">
+        <div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div>
+      </div>
     </div>
     <div id="finalSection" class="game-section">
       <h2>Final</h2>
-      <div id="finalGames" class="game-grid empty">Loading…</div>
+      <div id="finalGames" class="game-grid">
+        <div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div>
+      </div>
     </div>
   </section>
 
-  <section id="calendar" class="tab-panel">
+  <section id="calendar" class="tab-panel" role="tabpanel" aria-labelledby="tab-calendar" tabindex="0">
     <div class="panel-toolbar">
       <label for="calendarSelect">Week</label>
       <select id="calendarSelect"></select>
       <span id="calendarNote">Full schedule, kickoff times in your local time</span>
     </div>
-    <div id="calendarView">Loading…</div>
+    <div id="calendarView"><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div></div>
   </section>
 
-  <section id="previous" class="tab-panel">
+  <section id="previous" class="tab-panel" role="tabpanel" aria-labelledby="tab-previous" tabindex="0">
     <div class="panel-toolbar">
       <label for="weekSelect">Week</label>
       <select id="weekSelect"></select>
       <span id="previousNote">Open a game to see its highlights and scoring</span>
     </div>
-    <div id="previousGames" class="game-grid empty">Loading…</div>
+
+    <div class="filter-bar" data-filter-for="previous">
+      <input type="search" class="filter-search" placeholder="Filter by team…" aria-label="Filter games by team" autocomplete="off">
+      <div class="chips" role="group" aria-label="Quick filters">
+        <button class="chip active" data-mode="all" aria-pressed="true">All</button>
+        <button class="chip" data-mode="ranked" aria-pressed="false">Ranked</button>
+        <button class="chip" data-mode="favorites" aria-pressed="false">Favorites</button>
+      </div>
+      <select class="filter-conf" aria-label="Filter by conference"><option value="">All conferences</option></select>
+      <span class="filter-count"></span>
+    </div>
+
+    <div id="previousGames" class="game-grid">
+      <div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div>
+    </div>
   </section>
 
-  <section id="teams" class="tab-panel">
+  <section id="teams" class="tab-panel" role="tabpanel" aria-labelledby="tab-teams" tabindex="0">
     <div class="panel-toolbar">
       <label for="teamSearch">Team</label>
       <input id="teamSearch" list="teamOptions" placeholder="Search any team…" autocomplete="off" spellcheck="false">
@@ -69,31 +106,31 @@
     <div id="teamHeader"></div>
 
     <div id="teamContent" hidden>
-      <nav class="subtabs">
-        <button class="subtab-btn active" data-subtab="teamSchedule">Schedule</button>
-        <button class="subtab-btn" data-subtab="teamRoster">Roster</button>
-        <button class="subtab-btn" data-subtab="teamNews">News</button>
+      <nav class="subtabs" role="tablist" aria-label="Team sections">
+        <button class="subtab-btn active" role="tab" aria-selected="true" data-subtab="teamSchedule">Schedule</button>
+        <button class="subtab-btn" role="tab" aria-selected="false" tabindex="-1" data-subtab="teamRoster">Roster</button>
+        <button class="subtab-btn" role="tab" aria-selected="false" tabindex="-1" data-subtab="teamNews">News</button>
       </nav>
 
-      <div id="teamSchedule" class="subtab-panel active">
+      <div id="teamSchedule" class="subtab-panel active" role="tabpanel">
         <div class="panel-toolbar">
           <label for="teamSeason">Season</label>
           <select id="teamSeason"></select>
         </div>
-        <div id="teamScheduleView">Loading…</div>
+        <div id="teamScheduleView"></div>
       </div>
 
-      <div id="teamRoster" class="subtab-panel">
-        <div id="teamRosterView">Loading…</div>
+      <div id="teamRoster" class="subtab-panel" role="tabpanel">
+        <div id="teamRosterView"></div>
       </div>
 
-      <div id="teamNews" class="subtab-panel">
-        <div id="teamNewsView">Loading…</div>
+      <div id="teamNews" class="subtab-panel" role="tabpanel">
+        <div id="teamNewsView"></div>
       </div>
     </div>
   </section>
 
-  <section id="bracket" class="tab-panel">
+  <section id="bracket" class="tab-panel" role="tabpanel" aria-labelledby="tab-bracket" tabindex="0">
     <div class="panel-toolbar">
       <label for="seasonSelect">Season</label>
       <select id="seasonSelect"></select>
@@ -101,26 +138,33 @@
     </div>
     <p class="scroll-hint">Swipe sideways to see the full bracket</p>
     <div class="bracket-scroll">
-      <div id="bracketView" class="bracket-view">Loading…</div>
+      <div id="bracketView" class="bracket-view"></div>
     </div>
   </section>
 
-  <section id="rankings" class="tab-panel">
-    <table class="rank-table">
-      <thead>
-        <tr>
-          <th>Rank</th>
-          <th></th>
-          <th>Team</th>
-          <th>Record</th>
-          <th>Points</th>
-          <th>Trend</th>
-        </tr>
-      </thead>
-      <tbody id="rankingsBody">
-        <tr><td colspan="6" class="empty-row">Loading…</td></tr>
-      </tbody>
-    </table>
+  <section id="rankings" class="tab-panel" role="tabpanel" aria-labelledby="tab-rankings" tabindex="0">
+    <div class="panel-toolbar">
+      <label for="pollSelect">Poll</label>
+      <select id="pollSelect"></select>
+      <span id="pollNote"></span>
+    </div>
+    <div class="table-scroll">
+      <table class="rank-table">
+        <thead>
+          <tr>
+            <th scope="col">Rank</th>
+            <th scope="col"><span class="visually-hidden">Logo</span></th>
+            <th scope="col">Team</th>
+            <th scope="col">Record</th>
+            <th scope="col">Points</th>
+            <th scope="col">Trend</th>
+          </tr>
+        </thead>
+        <tbody id="rankingsBody">
+          <tr><td colspan="6" class="empty-row">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
   </section>
 </main>
 
@@ -130,6 +174,8 @@
     <div id="modalBody"></div>
   </div>
 </div>
+
+<div id="liveRegion" class="visually-hidden" role="status" aria-live="polite"></div>
 
 <script src="app.js"></script>
 </body>
