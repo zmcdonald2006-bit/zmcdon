@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>College Football Live Tracker</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <h1>College Football Live Tracker</h1>
+  <div class="status-line">
+    <span id="lastUpdated">Loading…</span>
+    <button id="refreshBtn" title="Refresh now">Refresh</button>
+  </div>
+</header>
+
+<nav class="tabs">
+  <button class="tab-btn active" data-tab="scores">Scores</button>
+  <button class="tab-btn" data-tab="bracket">Playoff Bracket</button>
+  <button class="tab-btn" data-tab="rankings">AP Top 25</button>
+</nav>
+
+<main>
+  <section id="scores" class="tab-panel active">
+    <div id="liveSection" class="game-section">
+      <h2>Live Now</h2>
+      <div id="liveGames" class="game-grid empty">No games in progress.</div>
+    </div>
+    <div id="upcomingSection" class="game-section">
+      <h2>Upcoming</h2>
+      <div id="upcomingGames" class="game-grid empty">Loading…</div>
+    </div>
+    <div id="finalSection" class="game-section">
+      <h2>Final</h2>
+      <div id="finalGames" class="game-grid empty">Loading…</div>
+    </div>
+  </section>
+
+  <section id="bracket" class="tab-panel">
+    <div class="bracket-toolbar">
+      <label for="seasonSelect">Season</label>
+      <select id="seasonSelect"></select>
+      <span id="bracketNote"></span>
+    </div>
+    <div class="bracket-scroll">
+      <div id="bracketView" class="bracket-view">Loading…</div>
+    </div>
+  </section>
+
+  <section id="rankings" class="tab-panel">
+    <table class="rank-table">
+      <thead>
+        <tr>
+          <th>Rank</th>
+          <th></th>
+          <th>Team</th>
+          <th>Record</th>
+          <th>Points</th>
+          <th>Trend</th>
+        </tr>
+      </thead>
+      <tbody id="rankingsBody">
+        <tr><td colspan="6" class="empty-row">Loading…</td></tr>
+      </tbody>
+    </table>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

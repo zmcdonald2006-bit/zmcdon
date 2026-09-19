@@ -1,0 +1,59 @@
+# College Football Live Tracker
+
+A live-updating scoreboard + AP Top 25 rankings table, styled like an ESPN/March-Madness bracket page. Pure static HTML/CSS/JS — no backend, no build step, no paid hosting required.
+
+## Tabs
+
+- **Scores** — every FBS game this week, split into Live / Upcoming / Final.
+- **Playoff Bracket** — the 12-team College Football Playoff, drawn from real game results. Slots start as TBD and fill in as the field is set and games are played, so you can trace exactly who beat whom on the way to the title. A season picker shows past brackets (2024-25 onward).
+- **AP Top 25** — current poll with records, points, and week-over-week movement.
+
+## How it works
+
+- Pulls live data straight from ESPN's public scoreboard/rankings JSON endpoints, directly from your browser.
+- Auto-refreshes every 30 seconds while any game is in progress, and every 5 minutes otherwise (so it doesn't hammer the API when nothing's happening).
+- Also refreshes whenever you switch back to the browser tab.
+- The bracket is entirely data-driven: each slot knows which seeds belong in it, and semifinals are matched by which quarterfinal winners actually show up in them, so the bracket reflects the real path rather than an assumed one.
+
+## Run it locally
+
+Any static file server works. Easiest with Python (if installed):
+
+```bash
+python -m http.server 8080
+```
+
+Then open `http://localhost:8080/`. (Opening `index.html` directly via `file://` won't work — the browser blocks the API fetch from a file URL in some cases, so use a local server.)
+
+Don't have Python/Node installed? This repo includes `serve.ps1`, a zero-dependency PowerShell static server:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File serve.ps1
+```
+
+Then open `http://localhost:8080/`. It's only for local testing — not part of the deployed site.
+
+## Deploy for free
+
+**GitHub Pages (recommended):**
+
+```bash
+git init
+git add .
+git commit -m "Initial commit"
+git branch -M main
+git remote add origin https://github.com/<your-username>/cfb-tracker.git
+git push -u origin main
+```
+
+Then in the repo on GitHub: Settings → Pages → Source: `main` branch, `/ (root)` folder. Your site will be live at `https://<your-username>.github.io/cfb-tracker/` within a minute or two.
+
+**Alternatives (also free, drag-and-drop, no git needed):**
+- [Netlify Drop](https://app.netlify.com/drop) — drag the folder in, get a URL instantly.
+- [Vercel](https://vercel.com) — `vercel deploy` or connect the GitHub repo.
+
+## Notes / limitations
+
+- The ESPN endpoints used here are public but unofficial (no API key, no docs, no SLA). If ESPN changes the response shape or blocks a request pattern, the page may need a small update — the fetch URLs and field names are all in `app.js`.
+- Currently shows FBS games only (`groups=80`). Ranking data is the AP Top 25 poll.
+- The bracket assumes the 12-team CFP format (seeds 1-4 on a bye; 5/12, 6/11, 7/10, 8/9 in the first round), which is the format for the 2026 season. If the playoff expands, the slot definitions at the top of the bracket section in `app.js` are where to change it.
