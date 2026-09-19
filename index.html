@@ -19,6 +19,7 @@
   <button class="tab-btn active" data-tab="scores">Scores</button>
   <button class="tab-btn" data-tab="calendar">Calendar</button>
   <button class="tab-btn" data-tab="previous">Previous Games</button>
+  <button class="tab-btn" data-tab="teams">Teams</button>
   <button class="tab-btn" data-tab="bracket">Playoff Bracket</button>
   <button class="tab-btn" data-tab="rankings">AP Top 25</button>
 </nav>
@@ -55,6 +56,41 @@
       <span id="previousNote">Open a game to see its highlights and scoring</span>
     </div>
     <div id="previousGames" class="game-grid empty">Loading…</div>
+  </section>
+
+  <section id="teams" class="tab-panel">
+    <div class="panel-toolbar">
+      <label for="teamSearch">Team</label>
+      <input id="teamSearch" list="teamOptions" placeholder="Search any team…" autocomplete="off" spellcheck="false">
+      <datalist id="teamOptions"></datalist>
+      <span id="teamNote"></span>
+    </div>
+
+    <div id="teamHeader"></div>
+
+    <div id="teamContent" hidden>
+      <nav class="subtabs">
+        <button class="subtab-btn active" data-subtab="teamSchedule">Schedule</button>
+        <button class="subtab-btn" data-subtab="teamRoster">Roster</button>
+        <button class="subtab-btn" data-subtab="teamNews">News</button>
+      </nav>
+
+      <div id="teamSchedule" class="subtab-panel active">
+        <div class="panel-toolbar">
+          <label for="teamSeason">Season</label>
+          <select id="teamSeason"></select>
+        </div>
+        <div id="teamScheduleView">Loading…</div>
+      </div>
+
+      <div id="teamRoster" class="subtab-panel">
+        <div id="teamRosterView">Loading…</div>
+      </div>
+
+      <div id="teamNews" class="subtab-panel">
+        <div id="teamNewsView">Loading…</div>
+      </div>
+    </div>
   </section>
 
   <section id="bracket" class="tab-panel">

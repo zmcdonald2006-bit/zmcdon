@@ -7,12 +7,13 @@ A live-updating scoreboard + AP Top 25 rankings table, styled like an ESPN/March
 - **Scores** — every FBS game this week, split into Live / Upcoming / Final.
 - **Calendar** — the full season schedule, week by week, grouped by day. Covers every regular-season week plus the entire postseason (all bowls and all 11 playoff games), with kickoff times in your local timezone, TV networks, and bowl names. Today's date is highlighted; games whose kickoff time hasn't been announced show "Time TBD" rather than a bogus midnight.
 - **Previous Games** — completed games by week, newest first, with a week picker covering the whole season so far.
+- **Teams** — search any of 762 teams for a team page with three views: **Schedule** (any season back to 2004, with a W-L record, results, opponent ranks, and bowl/playoff games merged in), **Roster** (grouped by offense/defense/special teams with number, position, height, weight, class, and hometown), and **News** (recent ESPN articles and videos). Your last team is remembered for next visit.
 - **Playoff Bracket** — the 12-team College Football Playoff, drawn from real game results. Slots start as TBD and fill in as the field is set and games are played, so you can trace exactly who beat whom on the way to the title. A season picker shows past brackets (2024-25 onward).
 - **AP Top 25** — current poll with records, points, and week-over-week movement.
 
 ## Highlights
 
-Click or tap any game that has started — in **Calendar**, **Previous Games**, or the Final/Live sections of **Scores** — to open its detail popup:
+Click or tap any game that has started — in **Calendar**, **Previous Games**, a team's **Schedule**, or the Final/Live sections of **Scores** — to open its detail popup:
 
 - Every video highlight ESPN posted for that game, playing inline in the popup (clips without a direct video source open on ESPN instead).
 - A full scoring summary: each scoring play with quarter, clock, team, and the running score.
@@ -67,5 +68,11 @@ Then in the repo on GitHub: Settings → Pages → Source: `main` branch, `/ (ro
 ## Notes / limitations
 
 - The ESPN endpoints used here are public but unofficial (no API key, no docs, no SLA). If ESPN changes the response shape or blocks a request pattern, the page may need a small update — the fetch URLs and field names are all in `app.js`.
+- `teams.json` is the one piece of bundled data. ESPN's bulk team-list endpoint is the only one that sends no CORS headers, so it can't be called from the browser; the list ships with the site instead. It only needs regenerating when teams join or leave Division I — pull both pages and keep `id` and `displayName` from each entry:
+
+```bash
+curl -s "https://site.api.espn.com/apis/site/v2/sports/football/college-football/teams?limit=500&page=1" -o page1.json
+curl -s "https://site.api.espn.com/apis/site/v2/sports/football/college-football/teams?limit=500&page=2" -o page2.json
+```
 - Currently shows FBS games only (`groups=80`). Ranking data is the AP Top 25 poll.
 - The bracket assumes the 12-team CFP format (seeds 1-4 on a bye; 5/12, 6/11, 7/10, 8/9 in the first round), which is the format for the 2026 season. If the playoff expands, the slot definitions at the top of the bracket section in `app.js` are where to change it.

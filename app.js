@@ -540,6 +540,337 @@ function initModal() {
   });
 }
 
+/* ---------- Teams ---------- */
+
+const TEAM_API = "https://site.api.espn.com/apis/site/v2/sports/football/college-football/teams";
+const OLDEST_SEASON = 2004;
+
+let teamIndex = null;
+let currentTeamId = null;
+const teamDataCache = new Map();
+
+function rememberTeam(id) {
+  try { localStorage.setItem("cfb-team", id); } catch (e) { /* private mode */ }
+}
+
+function recallTeam() {
+  try { return localStorage.getItem("cfb-team"); } catch (e) { return null; }
+}
+
+// ESPN's bulk /teams endpoint is the one call that sends no CORS headers, so the
+// team list ships with the site instead. See README for how to regenerate it.
+async function loadTeamIndex() {
+  if (teamIndex) return teamIndex;
+
+  const res = await fetch("teams.json");
+  if (!res.ok) throw new Error("teams.json fetch failed: " + res.status);
+  teamIndex = await res.json();
+
+  document.getElementById("teamOptions").innerHTML =
+    teamIndex.map(t => `<option value="${esc(t.name)}"></option>`).join("");
+  return teamIndex;
+}
+
+function resolveTeam(text) {
+  if (!teamIndex || !text) return null;
+  const q = text.trim().toLowerCase();
+  if (!q) return null;
+  return teamIndex.find(t => t.name.toLowerCase() === q) ||
+    teamIndex.find(t => t.name.toLowerCase().startsWith(q)) ||
+    teamIndex.find(t => t.name.toLowerCase().includes(q)) ||
+    null;
+}
+
+function initTeamSeasonSelect() {
+  const select = document.getElementById("teamSeason");
+  if (select.options.length) return;
+  const current = currentSeasonYear();
+  for (let y = current; y >= OLDEST_SEASON; y--) {
+    const opt = document.createElement("option");
+    opt.value = String(y);
+    opt.textContent = `${y}-${String(y + 1).slice(2)}`;
+    select.appendChild(opt);
+  }
+  select.addEventListener("change", () => {
+    if (currentTeamId) loadTeamSchedule(currentTeamId, Number(select.value)).catch(console.error);
+  });
+}
+
+async function teamJson(url, cacheKey) {
+  if (cacheKey && teamDataCache.has(cacheKey)) return teamDataCache.get(cacheKey);
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) throw new Error("team request failed: " + res.status);
+  const data = await res.json();
+  if (cacheKey) teamDataCache.set(cacheKey, data);
+  return data;
+}
+
+function renderTeamHeader(team) {
+  const record = (team.record && team.record.items && team.record.items[0] && team.record.items[0].summary) || "";
+  const next = team.nextEvent && team.nextEvent[0];
+  const logo = (team.logos && team.logos[0] && team.logos[0].href) || "";
+  const bits = [record, team.standingSummary].filter(Boolean).map(esc).join(" &middot; ");
+
+  let nextLine = "";
+  if (next) {
+    const when = new Date(next.date).toLocaleDateString([], { month: "short", day: "numeric" });
+    nextLine = `<div class="team-next">Next: ${esc(next.shortName || next.name)} &middot; ${when}</div>`;
+  }
+
+  document.getElementById("teamHeader").innerHTML = `
+    <div class="team-hero" style="border-left-color:#${esc(team.color || "555555")}">
+      <img src="${esc(logo)}" alt="" onerror="this.style.display='none'">
+      <div class="team-hero-info">
+        <h2>${team.rank && team.rank <= 25 ? `<span class="team-rank">#${team.rank}</span> ` : ""}${esc(team.displayName)}</h2>
+        ${bits ? `<div class="team-meta">${bits}</div>` : ""}
+        ${nextLine}
+      </div>
+    </div>`;
+}
+
+function scheduleRow(ev, teamId) {
+  const comp = ev.competitions[0];
+  const self = comp.competitors.find(c => String(c.team.id) === String(teamId));
+  const opp = comp.competitors.find(c => String(c.team.id) !== String(teamId));
+  if (!self || !opp) return "";
+
+  const completed = comp.status && comp.status.type && comp.status.type.completed;
+  const scoreOf = c => (c.score && typeof c.score === "object" ? c.score.displayValue : c.score) ?? "";
+  const oppRank = opp.curatedRank && opp.curatedRank.current;
+
+  let result = "";
+  if (completed) {
+    const won = self.winner === true;
+    result = `<span class="sched-result ${won ? "win" : "loss"}">${won ? "W" : "L"}</span>
+      <span class="sched-score">${esc(scoreOf(self))}-${esc(scoreOf(opp))}</span>`;
+  } else {
+    const time = comp.timeValid === false
+      ? "TBD"
+      : new Date(ev.date).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    result = `<span class="sched-upcoming">${esc(time)}</span>`;
+  }
+
+  const prefix = comp.neutralSite ? "vs" : (self.homeAway === "home" ? "vs" : "at");
+
+  return `
+    <li class="sched-row${completed ? " clickable" : ""}"${completed ? ` data-event-id="${esc(ev.id)}" tabindex="0" role="button"` : ""}>
+      <span class="sched-date">${new Date(ev.date).toLocaleDateString([], { month: "short", day: "numeric" })}</span>
+      <span class="sched-opp">
+        <span class="sched-prefix">${prefix}</span>
+        ${oppRank && oppRank <= 25 ? `<span class="sched-rank">#${oppRank}</span>` : ""}
+        <img src="${esc((opp.team.logos && opp.team.logos[0] && opp.team.logos[0].href) || opp.team.logo || "")}" alt="" onerror="this.style.visibility='hidden'">
+        <span class="sched-name">${esc(opp.team.displayName || opp.team.shortDisplayName)}</span>
+      </span>
+      <span class="sched-outcome">${result}</span>
+      <span class="sched-week">${esc((ev.week && ev.week.text) || (ev.seasonType && ev.seasonType.name) || "")}</span>
+    </li>`;
+}
+
+async function loadTeamSchedule(teamId, season) {
+  const view = document.getElementById("teamScheduleView");
+  view.innerHTML = `<p class="modal-empty">Loading schedule…</p>`;
+
+  // The schedule endpoint returns regular season only; bowls and playoff games
+  // need a second request with seasontype=3.
+  const [regular, post] = await Promise.all([
+    teamJson(`${TEAM_API}/${teamId}/schedule?season=${season}`, `sched:${teamId}:${season}:2`),
+    teamJson(`${TEAM_API}/${teamId}/schedule?season=${season}&seasontype=3`, `sched:${teamId}:${season}:3`)
+      .catch(() => ({ events: [] }))
+  ]);
+  if (currentTeamId !== teamId || Number(document.getElementById("teamSeason").value) !== season) return;
+
+  const seen = new Set();
+  const events = [...(regular.events || []), ...(post.events || [])]
+    .filter(ev => !seen.has(ev.id) && seen.add(ev.id))
+    .sort((a, b) => new Date(a.date) - new Date(b.date));
+  if (!events.length) {
+    view.innerHTML = `<p class="modal-empty">No games found for the ${season} season.</p>`;
+    return;
+  }
+
+  let wins = 0, losses = 0;
+  for (const ev of events) {
+    const self = ev.competitions[0].competitors.find(c => String(c.team.id) === String(teamId));
+    if (!ev.competitions[0].status.type.completed || !self) continue;
+    self.winner === true ? wins++ : losses++;
+  }
+
+  view.innerHTML = `
+    ${wins + losses ? `<p class="sched-summary">${wins}-${losses} in ${season}</p>` : ""}
+    <ul class="sched-list">${events.map(ev => scheduleRow(ev, teamId)).join("")}</ul>`;
+}
+
+async function loadTeamRoster(teamId) {
+  const view = document.getElementById("teamRosterView");
+  view.innerHTML = `<p class="modal-empty">Loading roster…</p>`;
+
+  const data = await teamJson(`${TEAM_API}/${teamId}/roster`, `roster:${teamId}`);
+  if (currentTeamId !== teamId) return;
+
+  const labels = {
+    offense: "Offense",
+    defense: "Defense",
+    specialTeam: "Special Teams",
+    injuredReserveOrOut: "Out",
+    suspended: "Suspended",
+    practiceSquad: "Practice Squad"
+  };
+
+  const groups = (data.athletes || []).filter(g => (g.items || []).length);
+  if (!groups.length) {
+    view.innerHTML = `<p class="modal-empty">No roster posted for this team.</p>`;
+    return;
+  }
+
+  view.innerHTML = groups.map(group => {
+    const rows = group.items
+      .slice()
+      .sort((a, b) => (Number(a.jersey) || 999) - (Number(b.jersey) || 999))
+      .map(p => {
+        const home = p.birthPlace
+          ? [p.birthPlace.city, p.birthPlace.state || p.birthPlace.country].filter(Boolean).join(", ")
+          : "";
+        return `
+          <tr>
+            <td class="r-num">${esc(p.jersey || "")}</td>
+            <td class="r-name">${esc(p.fullName || p.displayName)}</td>
+            <td>${esc((p.position && p.position.abbreviation) || "")}</td>
+            <td class="r-hide">${esc(p.displayHeight || "")}</td>
+            <td class="r-hide">${esc(p.displayWeight || "")}</td>
+            <td>${esc((p.experience && p.experience.displayValue) || "")}</td>
+            <td class="r-hide">${esc(home)}</td>
+          </tr>`;
+      }).join("");
+
+    return `
+      <h3 class="roster-group">${esc(labels[group.position] || group.position)}
+        <span class="cal-count">${group.items.length}</span>
+      </h3>
+      <div class="table-scroll">
+        <table class="roster-table">
+          <thead>
+            <tr>
+              <th>#</th><th>Name</th><th>Pos</th>
+              <th class="r-hide">Ht</th><th class="r-hide">Wt</th>
+              <th>Class</th><th class="r-hide">Hometown</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }).join("");
+}
+
+async function loadTeamNews(teamId) {
+  const view = document.getElementById("teamNewsView");
+  view.innerHTML = `<p class="modal-empty">Loading news…</p>`;
+
+  const data = await teamJson(
+    `https://site.api.espn.com/apis/site/v2/sports/football/college-football/news?team=${teamId}&limit=20`,
+    `news:${teamId}`
+  );
+  if (currentTeamId !== teamId) return;
+
+  const articles = data.articles || [];
+  if (!articles.length) {
+    view.innerHTML = `<p class="modal-empty">No recent news for this team.</p>`;
+    return;
+  }
+
+  view.innerHTML = `<div class="news-grid">${articles.map(a => {
+    const link = (a.links && a.links.web && a.links.web.href) || "";
+    const image = (a.images && a.images[0] && a.images[0].url) || "";
+    const when = a.published
+      ? new Date(a.published).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })
+      : "";
+    const headline = a.headline || "";
+    // Video clips repeat the headline as their description.
+    const desc = (a.description || "").trim() === headline.trim() ? "" : a.description || "";
+    return `
+      <a class="news-card" href="${esc(link)}" target="_blank" rel="noopener">
+        ${image ? `<img src="${esc(image)}" alt="" loading="lazy" onerror="this.style.display='none'">` : ""}
+        <div class="news-body">
+          <div class="news-headline">${esc(headline)}</div>
+          ${desc ? `<div class="news-desc">${esc(desc)}</div>` : ""}
+          <div class="news-date">${esc(when)}</div>
+        </div>
+      </a>`;
+  }).join("")}</div>`;
+}
+
+function activeSubtab() {
+  const btn = document.querySelector(".subtab-btn.active");
+  return btn ? btn.dataset.subtab : "teamSchedule";
+}
+
+function loadActiveSubtab() {
+  if (!currentTeamId) return;
+  const id = currentTeamId;
+  const which = activeSubtab();
+  const run = which === "teamRoster" ? loadTeamRoster(id)
+    : which === "teamNews" ? loadTeamNews(id)
+    : loadTeamSchedule(id, Number(document.getElementById("teamSeason").value));
+  run.catch(err => console.error(err));
+}
+
+async function selectTeam(teamId) {
+  currentTeamId = teamId;
+  rememberTeam(teamId);
+  document.getElementById("teamNote").textContent = "";
+  document.getElementById("teamContent").hidden = false;
+  document.getElementById("teamHeader").innerHTML = `<p class="modal-empty">Loading team…</p>`;
+
+  try {
+    const data = await teamJson(`${TEAM_API}/${teamId}`, null);
+    if (currentTeamId !== teamId) return;
+    renderTeamHeader(data.team);
+    document.getElementById("teamSearch").value = data.team.displayName;
+    loadActiveSubtab();
+  } catch (err) {
+    document.getElementById("teamHeader").innerHTML = `<p class="modal-empty">Couldn't load that team.</p>`;
+    console.error(err);
+  }
+}
+
+function initTeams() {
+  initTeamSeasonSelect();
+
+  document.querySelectorAll(".subtab-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".subtab-btn").forEach(b => b.classList.remove("active"));
+      document.querySelectorAll(".subtab-panel").forEach(p => p.classList.remove("active"));
+      btn.classList.add("active");
+      document.getElementById(btn.dataset.subtab).classList.add("active");
+      loadActiveSubtab();
+    });
+  });
+
+  const search = document.getElementById("teamSearch");
+  search.addEventListener("change", () => {
+    const match = resolveTeam(search.value);
+    if (match) selectTeam(match.id);
+    else document.getElementById("teamNote").textContent = "No team matched that name";
+  });
+  search.addEventListener("input", () => {
+    document.getElementById("teamNote").textContent = "";
+  });
+}
+
+async function openTeamsTab() {
+  const note = document.getElementById("teamNote");
+  try {
+    await loadTeamIndex();
+    if (!currentTeamId) {
+      const remembered = recallTeam();
+      if (remembered) selectTeam(remembered);
+      else note.textContent = `Search ${teamIndex.length} teams to see schedule, roster and news`;
+    }
+  } catch (err) {
+    note.textContent = "Couldn't load the team list.";
+    console.error(err);
+  }
+}
+
 /* ---------- Playoff bracket ---------- */
 
 // The 12-team CFP: seeds 1-4 get a bye, 5-12 play the first round.
@@ -842,6 +1173,7 @@ function initTabs() {
       if (btn.dataset.tab === "bracket") refreshBracketIfVisible();
       if (btn.dataset.tab === "previous") loadPreviousGames().catch(console.error);
       if (btn.dataset.tab === "calendar") loadCalendar().catch(console.error);
+      if (btn.dataset.tab === "teams") openTeamsTab();
     });
   });
 }
@@ -853,5 +1185,6 @@ document.addEventListener("visibilitychange", () => {
 
 initTabs();
 initSeasonSelect();
+initTeams();
 initModal();
 refreshAll();
