@@ -5,8 +5,18 @@ A live-updating scoreboard + AP Top 25 rankings table, styled like an ESPN/March
 ## Tabs
 
 - **Scores** — every FBS game this week, split into Live / Upcoming / Final.
+- **Previous Games** — completed games by week, newest first, with a week picker covering the whole season so far.
 - **Playoff Bracket** — the 12-team College Football Playoff, drawn from real game results. Slots start as TBD and fill in as the field is set and games are played, so you can trace exactly who beat whom on the way to the title. A season picker shows past brackets (2024-25 onward).
 - **AP Top 25** — current poll with records, points, and week-over-week movement.
+
+## Highlights
+
+Click or tap any game that has started — in **Previous Games** or in the Final/Live sections of **Scores** — to open its detail popup:
+
+- Every video highlight ESPN posted for that game, playing inline in the popup (clips without a direct video source open on ESPN instead).
+- A full scoring summary: each scoring play with quarter, clock, team, and the running score.
+
+Close it with the × button, by clicking outside it, or with Escape.
 
 ## How it works
 
@@ -14,6 +24,7 @@ A live-updating scoreboard + AP Top 25 rankings table, styled like an ESPN/March
 - Auto-refreshes every 30 seconds while any game is in progress, and every 5 minutes otherwise (so it doesn't hammer the API when nothing's happening).
 - Also refreshes whenever you switch back to the browser tab.
 - The bracket is entirely data-driven: each slot knows which seeds belong in it, and semifinals are matched by which quarterfinal winners actually show up in them, so the bracket reflects the real path rather than an assumed one.
+- Built for phones as well as desktops: single-column cards, scrollable tabs, a full-screen highlights sheet on small screens, and a horizontally scrollable bracket.
 
 ## Run it locally
 

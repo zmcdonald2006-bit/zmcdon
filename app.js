@@ -32,7 +32,7 @@ function teamRow(competitor, isWinner) {
     </div>`;
 }
 
-function gameCard(event) {
+function gameCard(event, showDate) {
   const comp = event.competitions[0];
   const status = comp.status;
   const state = status.type.state; // pre | in | post
@@ -56,10 +56,18 @@ function gameCard(event) {
 
   const broadcast = comp.broadcast ? `<div class="broadcast">${comp.broadcast}</div>` : "";
 
+  let metaLeft = comp.groups ? comp.groups.shortName : "";
+  if (showDate) {
+    metaLeft = new Date(event.date).toLocaleDateString([], { month: "short", day: "numeric" });
+  }
+
+  // Only games that have started have highlights or a scoring summary worth opening.
+  const openable = state !== "pre";
+
   return `
-    <div class="game-card" data-state="${state}">
+    <div class="game-card${openable ? " clickable" : ""}" data-state="${state}"${openable ? ` data-event-id="${event.id}" tabindex="0" role="button"` : ""}>
       <div class="meta">
-        <span>${comp.groups ? comp.groups.shortName : ""}</span>
+        <span>${metaLeft}</span>
         <span>${metaRight}</span>
       </div>
       ${teamRow(away, awayWin)}
@@ -68,7 +76,7 @@ function gameCard(event) {
     </div>`;
 }
 
-function renderGrid(elId, events, emptyMsg) {
+function renderGrid(elId, events, emptyMsg, showDate) {
   const el = document.getElementById(elId);
   if (!events.length) {
     el.className = "game-grid empty";
@@ -76,13 +84,14 @@ function renderGrid(elId, events, emptyMsg) {
     return;
   }
   el.className = "game-grid";
-  el.innerHTML = events.map(gameCard).join("");
+  el.innerHTML = events.map(ev => gameCard(ev, showDate)).join("");
 }
 
 async function loadScores() {
   const res = await fetch(SCOREBOARD_URL, { cache: "no-store" });
   if (!res.ok) throw new Error("scoreboard fetch failed: " + res.status);
   const data = await res.json();
+  captureCalendar(data);
   const events = data.events || [];
 
   const live = [], upcoming = [], final = [];
@@ -134,7 +143,12 @@ async function loadRankings() {
 
 async function refreshAll() {
   try {
-    const [hasLive] = await Promise.all([loadScores(), loadRankings(), refreshBracketIfVisible()]);
+    const [hasLive] = await Promise.all([
+      loadScores(),
+      loadRankings(),
+      refreshBracketIfVisible(),
+      refreshPreviousIfVisible()
+    ]);
     setLastUpdated();
     schedulePoll(hasLive);
   } catch (err) {
@@ -148,6 +162,260 @@ function schedulePoll(hasLive) {
   if (pollTimer) clearTimeout(pollTimer);
   const interval = hasLive ? LIVE_POLL_MS : IDLE_POLL_MS;
   pollTimer = setTimeout(refreshAll, interval);
+}
+
+/* ---------- Previous games ---------- */
+
+const SUMMARY_URL = "https://site.api.espn.com/apis/site/v2/sports/football/college-football/summary?event=";
+
+let seasonMeta = null;
+const weekCache = new Map();
+const summaryCache = new Map();
+
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// The scoreboard response carries the season calendar, so the week list comes
+// from the API rather than being hardcoded.
+function captureCalendar(data) {
+  if (seasonMeta) return;
+  const league = (data.leagues || [])[0];
+  if (!league || !league.calendar) return;
+
+  const now = new Date();
+  const weeks = [];
+  for (const section of league.calendar) {
+    const seasontype = Number(section.value);
+    if (seasontype !== 2 && seasontype !== 3) continue;
+    for (const entry of section.entries || []) {
+      if (new Date(entry.startDate) > now) continue;
+      weeks.push({ label: entry.label, value: Number(entry.value), seasontype });
+    }
+  }
+  if (!weeks.length) return;
+
+  seasonMeta = {
+    year: data.season ? data.season.year : currentSeasonYear(),
+    currentWeek: data.week ? data.week.number : weeks[weeks.length - 1].value,
+    currentType: data.season ? data.season.type : 2,
+    weeks
+  };
+  initWeekSelect();
+}
+
+function initWeekSelect() {
+  const select = document.getElementById("weekSelect");
+  select.innerHTML = "";
+  for (const w of seasonMeta.weeks.slice().reverse()) {
+    const opt = document.createElement("option");
+    opt.value = `${w.seasontype}:${w.value}`;
+    opt.textContent = w.label;
+    select.appendChild(opt);
+  }
+  const current = `${seasonMeta.currentType}:${seasonMeta.currentWeek}`;
+  if ([...select.options].some(o => o.value === current)) select.value = current;
+  select.addEventListener("change", () => loadPreviousGames().catch(console.error));
+}
+
+async function loadPreviousGames(force) {
+  if (!seasonMeta) return;
+  const select = document.getElementById("weekSelect");
+  const key = select.value;
+  if (!key) return;
+
+  const [seasontype, week] = key.split(":").map(Number);
+  const isCurrentWeek = seasontype === seasonMeta.currentType && week === seasonMeta.currentWeek;
+  const cached = weekCache.get(key);
+  if (cached && !force && !isCurrentWeek) {
+    renderPrevious(cached);
+    return;
+  }
+
+  const url = `https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard?groups=80&seasontype=${seasontype}&week=${week}&dates=${seasonMeta.year}&limit=300`;
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) throw new Error("week fetch failed: " + res.status);
+  const data = await res.json();
+
+  // A different week may have been picked while this request was in flight.
+  if (select.value !== key) return;
+
+  const finished = (data.events || [])
+    .filter(ev => ev.competitions[0].status.type.completed)
+    .sort((a, b) => new Date(b.date) - new Date(a.date));
+
+  weekCache.set(key, finished);
+  renderPrevious(finished);
+}
+
+function renderPrevious(events) {
+  renderGrid("previousGames", events, "No completed games for this week yet.", true);
+}
+
+function refreshPreviousIfVisible() {
+  if (activeTabName() !== "previous") return Promise.resolve();
+  return loadPreviousGames(true).catch(err => console.error(err));
+}
+
+/* ---------- Game highlights ---------- */
+
+function formatDuration(seconds) {
+  if (!seconds) return "";
+  const m = Math.floor(seconds / 60);
+  const s = String(seconds % 60).padStart(2, "0");
+  return `${m}:${s}`;
+}
+
+function clipHtml(video) {
+  const mp4 = video.links && video.links.source && video.links.source.href;
+  const web = (video.links && video.links.web && video.links.web.href) ||
+    `https://www.espn.com/video/clip?id=${video.id}`;
+  const duration = formatDuration(video.duration);
+  return `
+    <div class="clip" tabindex="0" role="button"${mp4 ? ` data-mp4="${esc(mp4)}"` : ""} data-web="${esc(web)}">
+      <div class="clip-thumb">
+        <img src="${esc(video.thumbnail || "")}" alt="" loading="lazy" onerror="this.style.display='none'">
+        <span class="clip-play">▶</span>
+        ${duration ? `<span class="clip-dur">${duration}</span>` : ""}
+      </div>
+      <div class="clip-title">${esc(video.headline || "Highlight")}</div>
+    </div>`;
+}
+
+function scoringPlayHtml(play, awayAbbr, homeAbbr) {
+  const logo = play.team && play.team.logo;
+  const period = play.period ? play.period.number : "";
+  const clock = play.clock ? play.clock.displayValue : "";
+  return `
+    <li class="play">
+      <span class="play-clock">Q${period} ${esc(clock)}</span>
+      ${logo ? `<img class="play-logo" src="${esc(logo)}" alt="">` : ""}
+      <span class="play-text">${esc((play.text || "").trim())}</span>
+      <span class="play-score">${esc(awayAbbr)} ${play.awayScore} &ndash; ${esc(homeAbbr)} ${play.homeScore}</span>
+    </li>`;
+}
+
+function summaryHtml(summary) {
+  const comp = summary.header.competitions[0];
+  const home = comp.competitors.find(c => c.homeAway === "home");
+  const away = comp.competitors.find(c => c.homeAway === "away");
+  const logoOf = c => (c.team.logos && c.team.logos[0] && c.team.logos[0].href) || c.team.logo || "";
+  const teamLine = c => `
+    <div class="modal-team${c.winner ? " winner" : ""}">
+      <img src="${esc(logoOf(c))}" alt="" onerror="this.style.visibility='hidden'">
+      <span class="modal-team-name">${esc(c.team.displayName)}</span>
+      <span class="modal-team-score">${esc(c.score)}</span>
+    </div>`;
+
+  const venue = summary.gameInfo && summary.gameInfo.venue;
+  let venueLine = "";
+  if (venue) {
+    venueLine = esc(venue.fullName);
+    const city = venue.address && venue.address.city;
+    // Stadium names often already carry the city, e.g. "Alumni Stadium (Chestnut Hill, MA)".
+    if (city && !venue.fullName.includes(city)) {
+      venueLine += ` &middot; ${esc(city)}${venue.address.state ? ", " + esc(venue.address.state) : ""}`;
+    }
+  }
+
+  const videos = summary.videos || [];
+  const plays = summary.scoringPlays || [];
+
+  const highlights = videos.length
+    ? `<div class="clip-grid">${videos.map(clipHtml).join("")}</div>`
+    : `<p class="modal-empty">No video highlights posted for this game.</p>`;
+
+  const scoring = plays.length
+    ? `<ul class="play-list">${plays.map(p => scoringPlayHtml(p, away.team.abbreviation, home.team.abbreviation)).join("")}</ul>`
+    : `<p class="modal-empty">No scoring plays recorded.</p>`;
+
+  return `
+    <div class="modal-header">
+      <h2 id="modalTitle" class="modal-score">
+        ${teamLine(away)}
+        ${teamLine(home)}
+      </h2>
+      <div class="modal-sub">
+        ${esc(comp.status.type.shortDetail)}
+        ${venueLine ? ` &middot; ${venueLine}` : ""}
+      </div>
+    </div>
+    <h3 class="modal-section">Highlights${videos.length ? ` <span class="count">${videos.length}</span>` : ""}</h3>
+    ${highlights}
+    <h3 class="modal-section">Scoring Summary</h3>
+    ${scoring}`;
+}
+
+function openModal() {
+  document.getElementById("gameModal").hidden = false;
+  document.body.classList.add("modal-open");
+  document.getElementById("modalClose").focus();
+}
+
+function closeModal() {
+  document.getElementById("gameModal").hidden = true;
+  document.body.classList.remove("modal-open");
+  document.getElementById("modalBody").innerHTML = "";
+}
+
+async function showGameDetails(eventId) {
+  const body = document.getElementById("modalBody");
+  openModal();
+  body.innerHTML = `<div class="modal-loading">Loading highlights…</div>`;
+
+  try {
+    let summary = summaryCache.get(eventId);
+    if (!summary) {
+      const res = await fetch(SUMMARY_URL + encodeURIComponent(eventId), { cache: "no-store" });
+      if (!res.ok) throw new Error("summary fetch failed: " + res.status);
+      summary = await res.json();
+      summaryCache.set(eventId, summary);
+    }
+    if (document.getElementById("gameModal").hidden) return;
+    body.innerHTML = summaryHtml(summary);
+  } catch (err) {
+    body.innerHTML = `<div class="modal-loading">Couldn't load this game. Try again in a moment.</div>`;
+    console.error(err);
+  }
+}
+
+function initModal() {
+  document.getElementById("modalClose").addEventListener("click", closeModal);
+  document.getElementById("gameModal").addEventListener("click", e => {
+    if (e.target.id === "gameModal") closeModal();
+  });
+  document.addEventListener("keydown", e => {
+    if (e.key === "Escape" && !document.getElementById("gameModal").hidden) closeModal();
+  });
+
+  document.getElementById("modalBody").addEventListener("click", e => {
+    const clip = e.target.closest(".clip");
+    if (!clip || clip.querySelector("video")) return;
+    if (!clip.dataset.mp4) {
+      window.open(clip.dataset.web, "_blank", "noopener");
+      return;
+    }
+    const video = document.createElement("video");
+    video.src = clip.dataset.mp4;
+    video.controls = true;
+    video.autoplay = true;
+    video.playsInline = true;
+    clip.querySelector(".clip-thumb").replaceChildren(video);
+  });
+
+  document.addEventListener("click", e => {
+    const card = e.target.closest(".game-card.clickable");
+    if (card) showGameDetails(card.dataset.eventId);
+  });
+  document.addEventListener("keydown", e => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const card = e.target.closest && e.target.closest(".game-card.clickable");
+    if (card) {
+      e.preventDefault();
+      showGameDetails(card.dataset.eventId);
+    }
+  });
 }
 
 /* ---------- Playoff bracket ---------- */
@@ -450,6 +718,7 @@ function initTabs() {
       btn.classList.add("active");
       document.getElementById(btn.dataset.tab).classList.add("active");
       if (btn.dataset.tab === "bracket") refreshBracketIfVisible();
+      if (btn.dataset.tab === "previous") loadPreviousGames().catch(console.error);
     });
   });
 }
@@ -461,4 +730,5 @@ document.addEventListener("visibilitychange", () => {
 
 initTabs();
 initSeasonSelect();
+initModal();
 refreshAll();
